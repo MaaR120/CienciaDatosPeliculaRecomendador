@@ -64,6 +64,7 @@ if titulo:
             if idx_pelicula not in st.session_state.peliculas_idx:
                 st.session_state.peliculas_idx.append(idx_pelicula)
                 st.success(f"'{df.loc[idx_pelicula, 'title']}' agregada a la lista de recomendacion.")
+                st.session_state.recomendadas = None  # Limpiar recomendaciones anteriores
             else:
                 st.info("Esa película ya está en la lista.")
 
@@ -100,21 +101,157 @@ if st.session_state.peliculas_idx:
         step=1
     )
 
-    if st.button("Generar recomendaciones"):
-        with st.spinner("Buscando películas similares..."):
-            st.session_state.recomendadas = recomendar_peliculas_multiples(
-                st.session_state.peliculas_idx,
-                n=n_recomendadas
-            )
+    # Opciones avanzadas de recomendación
+    with st.expander("Opciones avanzadas de recomendación"):
+        st.markdown("""
+        ### Método de Cálculo de Similitud
+        
+        Elige cómo se combinan las similitudes de múltiples películas base:
+        """)
+        usar_mediana = st.checkbox(
+            "Usar mediana en lugar de promedio ponderado", 
+            help="""
+            - Con promedio ponderado (default): Las películas recomendadas serán más similares a todas las películas base, 
+              usando los pesos definidos abajo para dar más o menos importancia a cada película.
+            - Con mediana: Las recomendaciones se basan en el valor central de similitud para cada película recomendada, 
+              ignorando los pesos. Útil cuando las películas base son muy diferentes entre sí.
+            """
+        )
+        
+        explicar = st.checkbox(
+            "Explicar recomendaciones", 
+            value=True,
+            help="""
+            Muestra detalles de por qué se recomienda cada película:
+            - Géneros en común con cada película base
+            - Directores compartidos
+            - Actores compartidos
+            """
+        )
+        
+        # Pesos personalizados para cada película base
+        st.markdown("""
+        ### Importancia Relativa
+        
+        Ajusta el peso (importancia) de cada película base en las recomendaciones:
+        - 1.0: Máxima influencia
+        - 0.0: Sin influencia
+        
+        ⚠️ Nota: Los pesos solo se utilizan cuando se usa el promedio ponderado. 
+        Si se selecciona "Usar mediana", los pesos se ignoran.
+        """)
+        pesos = []
+        cols_pesos = st.columns(len(st.session_state.peliculas_idx))
+        
+        # Si se usa mediana, mostrar los sliders deshabilitados con valor 1.0
+        if usar_mediana:
+            for i, (col, idx) in enumerate(zip(cols_pesos, st.session_state.peliculas_idx)):
+                with col:
+                    st.slider(
+                        f"Peso para {df.loc[idx, 'title']}",
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=1.0,
+                        step=0.1,
+                        key=f"peso_{idx}_disabled",
+                        disabled=True,
+                        help="Los pesos no se utilizan cuando se usa la mediana"
+                    )
+            # Usar pesos iguales (1.0) para todas las películas
+            pesos = [1.0] * len(st.session_state.peliculas_idx)
+        else:
+            for i, (col, idx) in enumerate(zip(cols_pesos, st.session_state.peliculas_idx)):
+                with col:
+                    peso = st.slider(
+                        f"Peso para {df.loc[idx, 'title']}",
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=1.0,
+                        step=0.1,
+                        key=f"peso_{idx}",
+                        help="Desliza para ajustar cuánto influye esta película en las recomendaciones"
+                    )
+                    pesos.append(peso)
 
+    # Validar que al menos un peso sea mayor que cero
+    if sum(pesos) == 0:
+        st.error("❌ Error: Al menos una película debe tener un peso mayor que cero.")
+    elif st.button("Generar recomendaciones"):
+        # Validar que al menos un peso sea mayor que cero antes de intentar recomendar
+        if sum(pesos) == 0:
+            st.error("❌ Al menos una película debe tener un peso mayor que cero.")
+        else:
+            with st.spinner("Buscando películas similares..."):
+                try:
+                    st.session_state.recomendadas = recomendar_peliculas_multiples(
+                        st.session_state.peliculas_idx,
+                        n=n_recomendadas,
+                        pesos=pesos,
+                        usar_mediana=usar_mediana,
+                        explicar=explicar
+                    )
+                except Exception as e:
+                    st.error(f"❌ Error al generar recomendaciones: {str(e)}")
+                    st.session_state.recomendadas = None
 
     if st.session_state.recomendadas is None or st.session_state.recomendadas.empty:
         st.error("No se pudieron generar recomendaciones.")
     else:
         base_titles = [df.loc[idx, "title"] for idx in st.session_state.peliculas_idx]
         st.success(f"Películas similares a **{', '.join(base_titles)}**:")
-        columnas_mostradas = ["title", "release_date", "original_language", "budget", "revenue", "runtime", "vote_average", "vote_count", "genres", "similitud_promedio"]
-        st.dataframe(st.session_state.recomendadas[columnas_mostradas])
+        
+        # Columnas base
+        columnas_mostradas = ["title", "release_date", "original_language", "genres", "similitud_promedio"]
+        
+        # Añadir columnas de similitud individual si hay más de una película base
+        if len(st.session_state.peliculas_idx) > 1:
+            columnas_similitud = [col for col in st.session_state.recomendadas.columns if col.startswith('similitud_con_')]
+            columnas_mostradas.extend(columnas_similitud)
+        
+        df_mostrado = st.session_state.recomendadas[columnas_mostradas].copy()
+        
+        # Formatear similitudes como porcentajes
+        for col in df_mostrado.columns:
+            if col.startswith('similitud'):
+                df_mostrado[col] = df_mostrado[col].apply(lambda x: f"{x*100:.1f}%")
+        
+        st.dataframe(df_mostrado)
+        
+        # Mostrar explicaciones si están disponibles
+        if 'explicacion' in st.session_state.recomendadas.columns:
+            st.subheader("Explicación de Recomendaciones")
+            for idx, row in st.session_state.recomendadas.iterrows():
+                with st.expander(f"Por qué recomendamos '{row['title']}'"):
+                    explicacion = row['explicacion']
+                    
+                    # Sección de géneros
+                    st.markdown("### 🎭 Géneros en Común")
+                    for pelicula, generos in explicacion['generos'].items():
+                        if generos:
+                            st.markdown(f"**Con {pelicula}:**")
+                            for genero in sorted(generos):
+                                st.markdown(f"- {genero}")
+                            st.markdown("")  # Espacio entre películas
+                    
+                    # Sección de directores
+                    if explicacion['directores']:
+                        st.markdown("### 🎬 Directores en Común")
+                        for director in sorted(explicacion['directores']):
+                            st.markdown(f"- {director}")
+                    
+                    # Sección de actores
+                    if explicacion['actores']:
+                        st.markdown("### 🎭 Actores en Común")
+                        for actor in sorted(explicacion['actores']):
+                            st.markdown(f"- {actor}")
+                            
+                    # Mostrar similitudes individuales si hay más de una película base
+                    similitudes = {k: v for k, v in row.items() if k.startswith('similitud_con_')}
+                    if len(similitudes) > 0:
+                        st.markdown("### 📊 Similitudes Individuales")
+                        for pelicula, similitud in similitudes.items():
+                            nombre_pelicula = pelicula.replace('similitud_con_', '')
+                            st.markdown(f"- {nombre_pelicula}: {similitud*100:.1f}%")
 
         # --- GRÁFICO INTERACTIVO ALTAR ---
         st.subheader("Comparación de Features TF-IDF")

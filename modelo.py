@@ -149,7 +149,17 @@ def train_model():
     return df, X, tfidf, tfidf_matrix, nn
 
 
-def recomendar_peliculas_multiples(idx_peliculas, n=10):
+def recomendar_peliculas_multiples(idx_peliculas, n=10, pesos=None, usar_mediana=False, explicar=False):
+    """
+    Recomendar películas basadas en múltiples películas base.
+    
+    Args:
+        idx_peliculas: Lista de índices de películas base
+        n: Número de recomendaciones a devolver
+        pesos: Lista de pesos para cada película base (default: pesos iguales)
+        usar_mediana: Si True, usa la mediana de distancias en lugar de la suma
+        explicar: Si True, incluye explicación de características compartidas
+    """
     df, X, tfidf, tfidf_matrix, nn = train_model()
 
     if isinstance(idx_peliculas, int):
@@ -159,23 +169,85 @@ def recomendar_peliculas_multiples(idx_peliculas, n=10):
         idx for idx in idx_peliculas if 0 <= idx < len(df)
     ]
 
-    vectores_base = tfidf_matrix[idx_peliculas_validas]
+    if len(idx_peliculas_validas) == 0:
+        return pd.DataFrame()  # Devolver DataFrame vacío si no hay películas válidas
 
-    distancias_totales = np.zeros(tfidf_matrix.shape[0])
+    # Normalizar pesos si se proporcionan, o usar pesos iguales
+    if pesos is None:
+        pesos = np.ones(len(idx_peliculas_validas)) / len(idx_peliculas_validas)
+    else:
+        pesos = np.array(pesos[:len(idx_peliculas_validas)])
+        pesos = pesos / pesos.sum()  # Normalizar para que sumen 1
 
-    for idx in idx_peliculas_validas:
+    # Matriz para guardar todas las distancias (películas × bases)
+    todas_distancias = np.zeros((tfidf_matrix.shape[0], len(idx_peliculas_validas)))
+
+    # Calcular distancias para cada película base
+    for i, idx in enumerate(idx_peliculas_validas):
         distancias = cosine_distances(tfidf_matrix[idx], tfidf_matrix)[0]
-        distancias_totales += distancias
+        todas_distancias[:, i] = distancias
 
+    # Combinar distancias según el método elegido
+    if usar_mediana:
+        distancias_totales = np.median(todas_distancias, axis=1)
+    else:
+        # Suma ponderada de distancias
+        distancias_totales = np.sum(todas_distancias * pesos.reshape(1, -1), axis=1)
+
+    # Excluir películas base
     distancias_totales[idx_peliculas_validas] = np.inf
 
+    # Obtener mejores matches
     mejores_indices = np.argsort(distancias_totales)[:n]
+    
+    # Normalizar similitudes a 0-1
+    if usar_mediana:
+        similitudes = 1 - distancias_totales[mejores_indices]
+    else:
+        similitudes = 1 - (distancias_totales[mejores_indices] / len(idx_peliculas_validas))
 
-    # similitud normalizada 0–1
-    similitudes = 1 - (distancias_totales[mejores_indices] / len(idx_peliculas_validas))
-
+    # Crear DataFrame con recomendaciones
     df_recomendadas = df.iloc[mejores_indices].copy()
     df_recomendadas['similitud_promedio'] = similitudes
+
+    # Añadir contribuciones individuales de cada película base
+    for i, idx_base in enumerate(idx_peliculas_validas):
+        nombre_col = f'similitud_con_{df.loc[idx_base, "title"]}'
+        df_recomendadas[nombre_col] = 1 - todas_distancias[mejores_indices, i]
+
+    if explicar:
+        # Extraer y comparar features importantes
+        caracteristicas = []
+        for idx_rec in mejores_indices:
+            try:
+                # Comparar géneros (asegurarse de que son strings)
+                generos_rec = set(str(df.loc[idx_rec, 'genres']).split(',')) if pd.notna(df.loc[idx_rec, 'genres']) else set()
+                generos_comunes = {}
+                
+                # Comparar con cada película base
+                for idx_base in idx_peliculas_validas:
+                    generos_base = set(str(df.loc[idx_base, 'genres']).split(',')) if pd.notna(df.loc[idx_base, 'genres']) else set()
+                    generos_comunes[df.loc[idx_base, 'title']] = generos_rec & generos_base
+                
+                # Otros elementos en común (directores, actores)
+                directores_rec = set(str(df.loc[idx_rec, 'directors']).split(',')) if pd.notna(df.loc[idx_rec, 'directors']) else set()
+                actores_rec = set(str(df.loc[idx_rec, 'main_actors']).split(',')) if pd.notna(df.loc[idx_rec, 'main_actors']) else set()
+                
+                elementos_comunes = {
+                    'generos': generos_comunes,
+                    'directores': [d for d in directores_rec if any(d in str(df.loc[idx_base, 'directors']) for idx_base in idx_peliculas_validas)],
+                    'actores': [a for a in actores_rec if any(a in str(df.loc[idx_base, 'main_actors']) for idx_base in idx_peliculas_validas)]
+                }
+            except Exception as e:
+                # Si hay algún error, crear un diccionario vacío pero válido
+                elementos_comunes = {
+                    'generos': {},
+                    'directores': [],
+                    'actores': []
+                }
+            caracteristicas.append(elementos_comunes)
+        
+        df_recomendadas['explicacion'] = caracteristicas
     
     # Guardar el índice original del DataFrame `df` para poder mapear los resultados
     # al conjunto original cuando se necesite (por ejemplo para obtener el perfil TF-IDF).
