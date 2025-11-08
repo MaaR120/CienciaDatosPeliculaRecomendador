@@ -218,32 +218,118 @@ def recomendar_peliculas_multiples(idx_peliculas, n=10, pesos=None, usar_mediana
     if explicar:
         # Extraer y comparar features importantes
         caracteristicas = []
+
+        # Nombres de features TF-IDF
+        try:
+            feature_names = tfidf.get_feature_names_out()
+        except Exception:
+            feature_names = None
+
         for idx_rec in mejores_indices:
             try:
-                # Comparar géneros (asegurarse de que son strings)
-                generos_rec = set(str(df.loc[idx_rec, 'genres']).split(',')) if pd.notna(df.loc[idx_rec, 'genres']) else set()
+                # Helpers para obtener conjuntos seguros desde columnas separadas por comas
+                def split_set(col, idx):
+                    val = df.loc[idx, col]
+                    if pd.isna(val):
+                        return set()
+                    # Convertir a string y split, strip
+                    return set([s.strip() for s in str(val).split(',') if s is not None and str(s).strip() != ""])
+
+                generos_rec = split_set('genres', idx_rec)
+                directores_rec = split_set('directors', idx_rec)
+                actores_rec = split_set('main_actors', idx_rec)
+                keywords_rec = split_set('keywords', idx_rec)
+                prod_rec = split_set('production_companies', idx_rec)
+
                 generos_comunes = {}
-                
-                # Comparar con cada película base
+                keywords_comunes = {}
+                prod_comunes = {}
+
                 for idx_base in idx_peliculas_validas:
-                    generos_base = set(str(df.loc[idx_base, 'genres']).split(',')) if pd.notna(df.loc[idx_base, 'genres']) else set()
-                    generos_comunes[df.loc[idx_base, 'title']] = generos_rec & generos_base
-                
-                # Otros elementos en común (directores, actores)
-                directores_rec = set(str(df.loc[idx_rec, 'directors']).split(',')) if pd.notna(df.loc[idx_rec, 'directors']) else set()
-                actores_rec = set(str(df.loc[idx_rec, 'main_actors']).split(',')) if pd.notna(df.loc[idx_rec, 'main_actors']) else set()
-                
+                    generos_base = split_set('genres', idx_base)
+                    keywords_base = split_set('keywords', idx_base)
+                    prod_base = split_set('production_companies', idx_base)
+
+                    base_title = df.loc[idx_base, 'title']
+                    generos_comunes[base_title] = sorted(list(generos_rec & generos_base))
+                    keywords_comunes[base_title] = sorted(list(keywords_rec & keywords_base))
+                    prod_comunes[base_title] = sorted(list(prod_rec & prod_base))
+
+                # Directores y actores en común (si aparecen en cualquiera de las bases)
+                directores_comunes = [d for d in sorted(directores_rec) if any(d in str(df.loc[idx_base, 'directors']) for idx_base in idx_peliculas_validas)]
+                actores_comunes = [a for a in sorted(actores_rec) if any(a in str(df.loc[idx_base, 'main_actors']) for idx_base in idx_peliculas_validas)]
+
+                # Top TF-IDF terms que explican la similitud: usar producto elemento a elemento entre vectores
+                top_terms = []
+                try:
+                    if feature_names is not None:
+                        vec_rec = tfidf_matrix[idx_rec]
+                        # acumulador de scores (sum of pairwise products with each base, ponderado por pesos si aplica)
+                        prod_scores = np.zeros(len(feature_names))
+                        for i, idx_base in enumerate(idx_peliculas_validas):
+                            vec_base = tfidf_matrix[idx_base]
+                            pr = vec_rec.multiply(vec_base).toarray().ravel()
+                            w = (pesos[i] if (pesos is not None and not usar_mediana) else 1.0)
+                            prod_scores += pr * float(w)
+                        # tomar top k términos con mayor score
+                        top_k = 8
+                        if prod_scores.sum() > 0:
+                            top_idx = np.argsort(prod_scores)[::-1][:top_k]
+                            for j in top_idx:
+                                if prod_scores[j] > 0:
+                                    top_terms.append(str(feature_names[j]))
+                        # evitar duplicados y truncar
+                        top_terms = list(dict.fromkeys(top_terms))[:top_k]
+                except Exception:
+                    top_terms = []
+
+                # Contribuciones por base: usar similitud individual (1 - distancia)
+                sim_per_base = []
+                for i, idx_base in enumerate(idx_peliculas_validas):
+                    try:
+                        sim = 1.0 - float(todas_distancias[idx_rec, i])
+                    except Exception:
+                        sim = 0.0
+                    # clamp
+                    if sim < 0:
+                        sim = 0.0
+                    sim_per_base.append(sim)
+
+                sim_array = np.array(sim_per_base, dtype=float)
+                if usar_mediana:
+                    contrib_raw = sim_array.copy()
+                else:
+                    peso_array = np.array(pesos[:len(sim_array)]) if pesos is not None else np.ones_like(sim_array)
+                    contrib_raw = sim_array * peso_array
+
+                if contrib_raw.sum() > 0:
+                    contribs = (contrib_raw / contrib_raw.sum()).tolist()
+                else:
+                    contribs = [0.0] * len(contrib_raw)
+
+                contrib_dict = {df.loc[idx_base, 'title']: float(contribs[i]) for i, idx_base in enumerate(idx_peliculas_validas)}
+
                 elementos_comunes = {
                     'generos': generos_comunes,
-                    'directores': [d for d in directores_rec if any(d in str(df.loc[idx_base, 'directors']) for idx_base in idx_peliculas_validas)],
-                    'actores': [a for a in actores_rec if any(a in str(df.loc[idx_base, 'main_actors']) for idx_base in idx_peliculas_validas)]
+                    'keywords': keywords_comunes,
+                    'production_companies': prod_comunes,
+                    'directores': directores_comunes,
+                    'actores': actores_comunes,
+                    'top_terms': top_terms,
+                    'contribuciones': contrib_dict,
+                    'similitudes_individuales': {df.loc[idx_base, 'title']: float(1.0 - float(todas_distancias[idx_rec, i])) for i, idx_base in enumerate(idx_peliculas_validas)}
                 }
-            except Exception as e:
+            except Exception:
                 # Si hay algún error, crear un diccionario vacío pero válido
                 elementos_comunes = {
                     'generos': {},
+                    'keywords': {},
+                    'production_companies': {},
                     'directores': [],
-                    'actores': []
+                    'actores': [],
+                    'top_terms': [],
+                    'contribuciones': {},
+                    'similitudes_individuales': {}
                 }
             caracteristicas.append(elementos_comunes)
         

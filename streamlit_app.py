@@ -3,6 +3,7 @@ from modelo import load_dataset, recomendar_peliculas_multiples, train_model
 from grafico import generar_df_comparacion, obtener_perfil_contenido
 import pandas as pd
 import altair as alt
+import streamlit.components.v1 as components
 
 st.set_page_config(layout="wide", page_title="Recomendador de Películas")
 
@@ -13,6 +14,32 @@ identificar la tuya segun su director.
 Con todas las peliculas que agregues, vamos a recomendarte todas las peliculas que vos quieras que 
 pensamos que te gustarian ver.
 """)
+
+
+def render_poster_con_fullscreen(poster_path, width=180, alt="Poster"):
+        """Renderiza un poster con un botón en la esquina superior derecha que abre la imagen en tamaño original.
+
+        poster_path: ruta en TMDB (ej: '/abc.jpg')
+        width: ancho en píxeles del thumbnail
+        """
+        if not isinstance(poster_path, str) or poster_path.strip() == "":
+                st.write("(Sin póster disponible)")
+                return
+
+        thumb = f"https://image.tmdb.org/t/p/w300{poster_path}"
+        full = f"https://image.tmdb.org/t/p/original{poster_path}"
+
+        # HTML inline: imagen dentro de un contenedor relativo con enlace absoluto en la esquina
+        html = f'''<div style="position:relative; display:inline-block;">
+            <img src="{thumb}" alt="{alt}" style="width:{width}px; border-radius:6px; display:block;"/>
+            <a href="{full}" target="_blank" rel="noopener noreferrer" style="position:absolute; top:6px; right:6px; background:rgba(0,0,0,0.55); color:white; padding:6px; border-radius:6px; text-decoration:none; font-weight:600;">🔍</a>
+        </div>'''
+
+        # Usar components.html para evitar problemas de sanitización y controlar altura mínima
+        # Calculamos una altura aproximada en px para el iframe (anchura * 1.5) como margen
+        height = int(width * 1.6)
+        components.html(html, height=height)
+
 
 # Carga del dataset y modelo
 with st.spinner("Cargando dataset..."):
@@ -56,7 +83,8 @@ if titulo:
             
         poster_url = df.loc[idx_pelicula, "poster_path"]
         if isinstance(poster_url, str) and poster_url.strip() != "":
-            st.image(f"https://image.tmdb.org/t/p/w300{poster_url}", width=180)
+            # Mostrar poster con botón de pantalla completa en la esquina superior derecha
+            render_poster_con_fullscreen(poster_url, width=180, alt=df.loc[idx_pelicula, 'title'])
         else:
             st.write("(Sin póster disponible)")
 
@@ -83,7 +111,7 @@ if st.session_state.peliculas_idx:
 
             st.markdown(f"**{titulo}**")
             if isinstance(poster_url, str) and poster_url.strip() != "":
-                st.image(f"https://image.tmdb.org/t/p/w300{poster_url}", width=180)
+                render_poster_con_fullscreen(poster_url, width=180, alt=titulo)
             else:
                 st.write("(Sin póster disponible)")
 
@@ -226,32 +254,73 @@ if st.session_state.peliculas_idx:
                     
                     # Sección de géneros
                     st.markdown("### 🎭 Géneros en Común")
-                    for pelicula, generos in explicacion['generos'].items():
-                        if generos:
-                            st.markdown(f"**Con {pelicula}:**")
-                            for genero in sorted(generos):
-                                st.markdown(f"- {genero}")
-                            st.markdown("")  # Espacio entre películas
-                    
-                    # Sección de directores
-                    if explicacion['directores']:
+                    generos_info = explicacion.get('generos', {})
+                    if generos_info:
+                        for pelicula, generos in generos_info.items():
+                            if generos:
+                                st.markdown(f"**Con {pelicula}:**")
+                                for genero in sorted(generos):
+                                    st.markdown(f"- {genero}")
+                                st.markdown("")
+                            else:
+                                st.markdown(f"**Con {pelicula}:** Ninguno")
+                    else:
+                        st.markdown("No se encontraron géneros en común.")
+
+                    # Keywords compartidas
+                    st.markdown("### 🔑 Keywords en Común")
+                    kw_info = explicacion.get('keywords', {})
+                    if kw_info:
+                        for pelicula, kws in kw_info.items():
+                            if kws:
+                                st.markdown(f"**Con {pelicula}:** {', '.join(kws)}")
+                            else:
+                                st.markdown(f"**Con {pelicula}:** Ninguna")
+                    else:
+                        st.markdown("No se encontraron keywords en común.")
+
+                    # Production companies compartidas
+                    st.markdown("### � Production Companies en Común")
+                    pc_info = explicacion.get('production_companies', {})
+                    if pc_info:
+                        for pelicula, pcs in pc_info.items():
+                            if pcs:
+                                st.markdown(f"**Con {pelicula}:** {', '.join(pcs)}")
+                            else:
+                                st.markdown(f"**Con {pelicula}:** Ninguna")
+                    else:
+                        st.markdown("No se encontraron production companies en común.")
+
+                    # Directores y actores
+                    if explicacion.get('directores'):
                         st.markdown("### 🎬 Directores en Común")
-                        for director in sorted(explicacion['directores']):
+                        for director in explicacion.get('directores', []):
                             st.markdown(f"- {director}")
-                    
-                    # Sección de actores
-                    if explicacion['actores']:
+
+                    if explicacion.get('actores'):
                         st.markdown("### 🎭 Actores en Común")
-                        for actor in sorted(explicacion['actores']):
+                        for actor in explicacion.get('actores', []):
                             st.markdown(f"- {actor}")
-                            
-                    # Mostrar similitudes individuales si hay más de una película base
-                    similitudes = {k: v for k, v in row.items() if k.startswith('similitud_con_')}
-                    if len(similitudes) > 0:
-                        st.markdown("### 📊 Similitudes Individuales")
-                        for pelicula, similitud in similitudes.items():
-                            nombre_pelicula = pelicula.replace('similitud_con_', '')
-                            st.markdown(f"- {nombre_pelicula}: {similitud*100:.1f}%")
+
+                    # Top TF-IDF terms que explican la similitud
+                    top_terms = explicacion.get('top_terms', [])
+                    if top_terms:
+                        st.markdown("### ✨ Términos TF‑IDF que explican la similitud")
+                        st.markdown(", ".join(top_terms))
+
+                    # Contribución relativa de cada película base
+                    contribs = explicacion.get('contribuciones', {})
+                    if contribs:
+                        st.markdown("### 📊 Contribución relativa de cada película base")
+                        for base, val in contribs.items():
+                            st.markdown(f"- {base}: {val*100:.1f}%")
+
+                    # Mostrar similitudes individuales si están disponibles
+                    similitudes_ind = explicacion.get('similitudes_individuales', {})
+                    if similitudes_ind:
+                        st.markdown("### 🔍 Similitudes individuales (por base)")
+                        for base, sim in similitudes_ind.items():
+                            st.markdown(f"- {base}: {sim*100:.1f}%")
 
         # --- GRÁFICO INTERACTIVO ALTAR ---
         st.subheader("Comparación de Features TF-IDF")
@@ -322,7 +391,7 @@ if st.session_state.peliculas_idx:
                 titulo = pelicula_comparada["title"]
                 st.markdown(f"### {titulo}")
                 if isinstance(poster_url, str) and poster_url.strip() != "":
-                    st.image(f"https://image.tmdb.org/t/p/w300{poster_url}", width=250)
+                    render_poster_con_fullscreen(poster_url, width=250, alt=titulo)
                 else:
                     st.write("(Sin póster disponible)")
 
