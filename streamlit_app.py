@@ -3,6 +3,7 @@ from modelo import load_dataset, recomendar_peliculas_multiples, train_model
 from grafico import generar_df_comparacion, obtener_perfil_contenido
 import pandas as pd
 import altair as alt
+import streamlit.components.v1 as components
 
 st.set_page_config(layout="wide", page_title="Recomendador de Películas")
 
@@ -13,6 +14,32 @@ identificar la tuya segun su director.
 Con todas las peliculas que agregues, vamos a recomendarte todas las peliculas que vos quieras que 
 pensamos que te gustarian ver.
 """)
+
+
+def render_poster_con_fullscreen(poster_path, width=180, alt="Poster"):
+        """Renderiza un poster con un botón en la esquina superior derecha que abre la imagen en tamaño original.
+
+        poster_path: ruta en TMDB (ej: '/abc.jpg')
+        width: ancho en píxeles del thumbnail
+        """
+        if not isinstance(poster_path, str) or poster_path.strip() == "":
+                st.write("(Sin póster disponible)")
+                return
+
+        thumb = f"https://image.tmdb.org/t/p/w300{poster_path}"
+        full = f"https://image.tmdb.org/t/p/original{poster_path}"
+
+        # HTML inline: imagen dentro de un contenedor relativo con enlace absoluto en la esquina
+        html = f'''<div style="position:relative; display:inline-block;">
+            <img src="{thumb}" alt="{alt}" style="width:{width}px; border-radius:6px; display:block;"/>
+            <a href="{full}" target="_blank" rel="noopener noreferrer" style="position:absolute; top:6px; right:6px; background:rgba(0,0,0,0.55); color:white; padding:6px; border-radius:6px; text-decoration:none; font-weight:600;">🔍</a>
+        </div>'''
+
+        # Usar components.html para evitar problemas de sanitización y controlar altura mínima
+        # Calculamos una altura aproximada en px para el iframe (anchura * 1.5) como margen
+        height = int(width * 1.6)
+        components.html(html, height=height)
+
 
 # Carga del dataset y modelo
 with st.spinner("Cargando dataset..."):
@@ -56,7 +83,8 @@ if titulo:
             
         poster_url = df.loc[idx_pelicula, "poster_path"]
         if isinstance(poster_url, str) and poster_url.strip() != "":
-            st.image(f"https://image.tmdb.org/t/p/w300{poster_url}", width=180)
+            # Mostrar poster con botón de pantalla completa en la esquina superior derecha
+            render_poster_con_fullscreen(poster_url, width=180, alt=df.loc[idx_pelicula, 'title'])
         else:
             st.write("(Sin póster disponible)")
 
@@ -64,6 +92,7 @@ if titulo:
             if idx_pelicula not in st.session_state.peliculas_idx:
                 st.session_state.peliculas_idx.append(idx_pelicula)
                 st.success(f"'{df.loc[idx_pelicula, 'title']}' agregada a la lista de recomendacion.")
+                st.session_state.recomendadas = None  # Limpiar recomendaciones anteriores
             else:
                 st.info("Esa película ya está en la lista.")
 
@@ -82,7 +111,7 @@ if st.session_state.peliculas_idx:
 
             st.markdown(f"**{titulo}**")
             if isinstance(poster_url, str) and poster_url.strip() != "":
-                st.image(f"https://image.tmdb.org/t/p/w300{poster_url}", width=180)
+                render_poster_con_fullscreen(poster_url, width=180, alt=titulo)
             else:
                 st.write("(Sin póster disponible)")
 
@@ -100,21 +129,198 @@ if st.session_state.peliculas_idx:
         step=1
     )
 
-    if st.button("Generar recomendaciones"):
-        with st.spinner("Buscando películas similares..."):
-            st.session_state.recomendadas = recomendar_peliculas_multiples(
-                st.session_state.peliculas_idx,
-                n=n_recomendadas
-            )
+    # Opciones avanzadas de recomendación
+    with st.expander("Opciones avanzadas de recomendación"):
+        st.markdown("""
+        ### Método de Cálculo de Similitud
+        
+        Elige cómo se combinan las similitudes de múltiples películas base:
+        """)
+        usar_mediana = st.checkbox(
+            "Usar mediana en lugar de promedio ponderado", 
+            help="""
+            - Con promedio ponderado (default): Las películas recomendadas serán más similares a todas las películas base, 
+              usando los pesos definidos abajo para dar más o menos importancia a cada película.
+            - Con mediana: Las recomendaciones se basan en el valor central de similitud para cada película recomendada, 
+              ignorando los pesos. Útil cuando las películas base son muy diferentes entre sí.
+            """
+        )
+        
+        explicar = st.checkbox(
+            "Explicar recomendaciones", 
+            value=True,
+            help="""
+            Muestra detalles de por qué se recomienda cada película:
+            - Géneros en común con cada película base
+            - Directores compartidos
+            - Actores compartidos
+            """
+        )
+        
+        # Pesos personalizados para cada película base
+        st.markdown("""
+        ### Importancia Relativa
+        
+        Ajusta el peso (importancia) de cada película base en las recomendaciones:
+        - 1.0: Máxima influencia
+        - 0.0: Sin influencia
+        
+        ⚠️ Nota: Los pesos solo se utilizan cuando se usa el promedio ponderado. 
+        Si se selecciona "Usar mediana", los pesos se ignoran.
+        """)
+        pesos = []
+        cols_pesos = st.columns(len(st.session_state.peliculas_idx))
+        
+        # Si se usa mediana, mostrar los sliders deshabilitados con valor 1.0
+        if usar_mediana:
+            for i, (col, idx) in enumerate(zip(cols_pesos, st.session_state.peliculas_idx)):
+                with col:
+                    st.slider(
+                        f"Peso para {df.loc[idx, 'title']}",
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=1.0,
+                        step=0.1,
+                        key=f"peso_{idx}_disabled",
+                        disabled=True,
+                        help="Los pesos no se utilizan cuando se usa la mediana"
+                    )
+            # Usar pesos iguales (1.0) para todas las películas
+            pesos = [1.0] * len(st.session_state.peliculas_idx)
+        else:
+            for i, (col, idx) in enumerate(zip(cols_pesos, st.session_state.peliculas_idx)):
+                with col:
+                    peso = st.slider(
+                        f"Peso para {df.loc[idx, 'title']}",
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=1.0,
+                        step=0.1,
+                        key=f"peso_{idx}",
+                        help="Desliza para ajustar cuánto influye esta película en las recomendaciones"
+                    )
+                    pesos.append(peso)
 
+    # Validar que al menos un peso sea mayor que cero
+    if sum(pesos) == 0:
+        st.error("❌ Error: Al menos una película debe tener un peso mayor que cero.")
+    elif st.button("Generar recomendaciones"):
+        # Validar que al menos un peso sea mayor que cero antes de intentar recomendar
+        if sum(pesos) == 0:
+            st.error("❌ Al menos una película debe tener un peso mayor que cero.")
+        else:
+            with st.spinner("Buscando películas similares..."):
+                try:
+                    st.session_state.recomendadas = recomendar_peliculas_multiples(
+                        st.session_state.peliculas_idx,
+                        n=n_recomendadas,
+                        pesos=pesos,
+                        usar_mediana=usar_mediana,
+                        explicar=explicar
+                    )
+                except Exception as e:
+                    st.error(f"❌ Error al generar recomendaciones: {str(e)}")
+                    st.session_state.recomendadas = None
 
     if st.session_state.recomendadas is None or st.session_state.recomendadas.empty:
         st.error("No se pudieron generar recomendaciones.")
     else:
         base_titles = [df.loc[idx, "title"] for idx in st.session_state.peliculas_idx]
         st.success(f"Películas similares a **{', '.join(base_titles)}**:")
-        columnas_mostradas = ["title", "release_date", "original_language", "budget", "revenue", "runtime", "vote_average", "vote_count", "genres", "similitud_promedio"]
-        st.dataframe(st.session_state.recomendadas[columnas_mostradas])
+        
+        # Columnas base
+        columnas_mostradas = ["title", "release_date", "original_language", "genres", "similitud_promedio"]
+        
+        # Añadir columnas de similitud individual si hay más de una película base
+        if len(st.session_state.peliculas_idx) > 1:
+            columnas_similitud = [col for col in st.session_state.recomendadas.columns if col.startswith('similitud_con_')]
+            columnas_mostradas.extend(columnas_similitud)
+        
+        df_mostrado = st.session_state.recomendadas[columnas_mostradas].copy()
+        
+        # Formatear similitudes como porcentajes
+        for col in df_mostrado.columns:
+            if col.startswith('similitud'):
+                df_mostrado[col] = df_mostrado[col].apply(lambda x: f"{x*100:.1f}%")
+        
+        st.dataframe(df_mostrado)
+        
+        # Mostrar explicaciones si están disponibles
+        if 'explicacion' in st.session_state.recomendadas.columns:
+            st.subheader("Explicación de Recomendaciones")
+            for idx, row in st.session_state.recomendadas.iterrows():
+                with st.expander(f"Por qué recomendamos '{row['title']}'"):
+                    explicacion = row['explicacion']
+                    
+                    # Sección de géneros
+                    st.markdown("### 🎭 Géneros en Común")
+                    generos_info = explicacion.get('generos', {})
+                    if generos_info:
+                        for pelicula, generos in generos_info.items():
+                            if generos:
+                                st.markdown(f"**Con {pelicula}:**")
+                                for genero in sorted(generos):
+                                    st.markdown(f"- {genero}")
+                                st.markdown("")
+                            else:
+                                st.markdown(f"**Con {pelicula}:** Ninguno")
+                    else:
+                        st.markdown("No se encontraron géneros en común.")
+
+                    # Keywords compartidas
+                    st.markdown("### 🔑 Keywords en Común")
+                    kw_info = explicacion.get('keywords', {})
+                    if kw_info:
+                        for pelicula, kws in kw_info.items():
+                            if kws:
+                                st.markdown(f"**Con {pelicula}:** {', '.join(kws)}")
+                            else:
+                                st.markdown(f"**Con {pelicula}:** Ninguna")
+                    else:
+                        st.markdown("No se encontraron keywords en común.")
+
+                    # Production companies compartidas
+                    st.markdown("### � Production Companies en Común")
+                    pc_info = explicacion.get('production_companies', {})
+                    if pc_info:
+                        for pelicula, pcs in pc_info.items():
+                            if pcs:
+                                st.markdown(f"**Con {pelicula}:** {', '.join(pcs)}")
+                            else:
+                                st.markdown(f"**Con {pelicula}:** Ninguna")
+                    else:
+                        st.markdown("No se encontraron production companies en común.")
+
+                    # Directores y actores
+                    if explicacion.get('directores'):
+                        st.markdown("### 🎬 Directores en Común")
+                        for director in explicacion.get('directores', []):
+                            st.markdown(f"- {director}")
+
+                    if explicacion.get('actores'):
+                        st.markdown("### 🎭 Actores en Común")
+                        for actor in explicacion.get('actores', []):
+                            st.markdown(f"- {actor}")
+
+                    # Top TF-IDF terms que explican la similitud
+                    top_terms = explicacion.get('top_terms', [])
+                    if top_terms:
+                        st.markdown("### ✨ Términos TF‑IDF que explican la similitud")
+                        st.markdown(", ".join(top_terms))
+
+                    # Contribución relativa de cada película base
+                    contribs = explicacion.get('contribuciones', {})
+                    if contribs:
+                        st.markdown("### 📊 Contribución relativa de cada película base")
+                        for base, val in contribs.items():
+                            st.markdown(f"- {base}: {val*100:.1f}%")
+
+                    # Mostrar similitudes individuales si están disponibles
+                    similitudes_ind = explicacion.get('similitudes_individuales', {})
+                    if similitudes_ind:
+                        st.markdown("### 🔍 Similitudes individuales (por base)")
+                        for base, sim in similitudes_ind.items():
+                            st.markdown(f"- {base}: {sim*100:.1f}%")
 
         # --- GRÁFICO INTERACTIVO ALTAR ---
         st.subheader("Comparación de Features TF-IDF")
@@ -185,7 +391,7 @@ if st.session_state.peliculas_idx:
                 titulo = pelicula_comparada["title"]
                 st.markdown(f"### {titulo}")
                 if isinstance(poster_url, str) and poster_url.strip() != "":
-                    st.image(f"https://image.tmdb.org/t/p/w300{poster_url}", width=250)
+                    render_poster_con_fullscreen(poster_url, width=250, alt=titulo)
                 else:
                     st.write("(Sin póster disponible)")
 
