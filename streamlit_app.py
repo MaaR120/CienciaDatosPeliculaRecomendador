@@ -46,6 +46,60 @@ with st.spinner("Cargando dataset..."):
     df = load_dataset()
 with st.spinner("Entrenando modelo..."):
     train_model()
+    
+st.header("Explorador del Dataset Completo")
+
+with st.expander("Mostrar / buscar películas en el dataset"):
+    st.markdown("""
+    Acá podés buscar películas dentro de todo el dataset según distintos filtros.
+    Por motivos de rendimiento, se muestra un máximo de 1000 resultados por vez.
+    """)
+
+    # --- Filtros ---
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        filtro_titulo = st.text_input("Título contiene:")
+    with col2:
+        filtro_director = st.text_input("Director contiene:")
+    with col3:
+        filtro_genero = st.text_input("Género contiene:")
+    with col4:
+        filtro_idioma = st.text_input("Idioma original contiene:")
+
+    # --- Aplicar filtros dinámicamente ---
+    df_filtrado = df.copy()
+
+    if filtro_titulo:
+        df_filtrado = df_filtrado[df_filtrado["title"].str.contains(filtro_titulo, case=False, na=False)]
+    if filtro_director:
+        df_filtrado = df_filtrado[df_filtrado["directors"].str.contains(filtro_director, case=False, na=False)]
+    if filtro_genero:
+        df_filtrado = df_filtrado[df_filtrado["genres"].str.contains(filtro_genero, case=False, na=False)]
+    if filtro_idioma:
+        df_filtrado = df_filtrado[df_filtrado["original_language"].astype(str).str.contains(filtro_idioma, case=False, na=False)]
+
+    # --- Selección de cantidad de filas y paginación ---
+    total_resultados = len(df_filtrado)
+    st.write(f"{total_resultados:,} películas encontradas. Mostrando hasta 1000 resultados:")
+
+    max_mostrar = 1000
+    df_mostrar = df_filtrado.head(max_mostrar)
+
+    # --- Mostrar dataframe paginado ---
+    st.dataframe(
+        df_mostrar.drop(["poster_path", "status", "adult"], errors="ignore"),
+        use_container_width=True,
+        height=500
+    )
+
+    # --- Opción de descarga ---
+    csv = df_mostrar.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Descargar resultados como CSV",
+        data=csv,
+        file_name="peliculas_filtradas.csv",
+        mime="text/csv"
+    )
 
 # Estado para guardar índices seleccionados
 if "peliculas_idx" not in st.session_state:
