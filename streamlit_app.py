@@ -86,8 +86,11 @@ with st.expander("Mostrar / buscar películas en el dataset"):
     df_mostrar = df_filtrado.head(max_mostrar)
 
     # --- Mostrar dataframe paginado ---
+    # paso la columna id a string para que sea facilmente copiable y sin comas
+    df_display = df_mostrar.copy()
+    df_display["id"] = df_display["id"].astype(str)
     st.dataframe(
-        df_mostrar.drop(["poster_path", "status", "adult"], errors="ignore"),
+        df_display.drop(["poster_path", "status", "adult"], errors="ignore"),
         use_container_width=True,
         height=500
     )
@@ -100,6 +103,49 @@ with st.expander("Mostrar / buscar películas en el dataset"):
         file_name="peliculas_filtradas.csv",
         mime="text/csv"
     )
+    
+    
+    # --- Buscar por ID específico ---
+    st.markdown("---")
+    st.subheader("Ver detalles de una película por ID")
+
+    # Mostrar sugerencia de IDs disponibles
+    ids_disponibles = df_mostrar["id"].tolist() if "id" in df_mostrar.columns else df_mostrar.index.tolist()
+    id_input = st.number_input(
+        "Ingresá el ID de la película (según la columna 'id' del dataset):",
+        min_value=min(ids_disponibles) if ids_disponibles else 0,
+        max_value=max(ids_disponibles) if ids_disponibles else 0,
+        step=1
+    )
+
+    if st.button("Mostrar detalles de película"):
+        # Buscar película por ID
+        if "id" in df.columns:
+            fila = df[df["id"] == id_input]
+        else:
+            fila = df.loc[[id_input]] if id_input in df.index else pd.DataFrame()
+
+        if fila.empty:
+            st.error("No se encontró ninguna película con ese ID.")
+        else:
+            pelicula = fila.iloc[0]
+            st.markdown(f"## {pelicula['title']}")
+            st.caption(f"Fecha de estreno: {pelicula.get('release_date', 'Desconocida')} — Idioma: {pelicula.get('original_language', 'N/A')}")
+            
+            poster_url = pelicula.get("poster_path", "")
+            if isinstance(poster_url, str) and poster_url.strip() != "":
+                render_poster_con_fullscreen(poster_url, width=300, alt=pelicula["title"])
+            else:
+                st.write("(Sin póster disponible)")
+
+            # Mostrar overview completo
+            st.markdown("### Sinopsis")
+            st.write(pelicula.get("overview", "No hay sinopsis disponible."))
+
+            # Mostrar el resto de columnas (excepto poster_path)
+            st.markdown("### Detalles completos")
+            detalles = pelicula.drop(labels=["poster_path"], errors="ignore")
+            st.json(detalles.to_dict())
 
 # Estado para guardar índices seleccionados
 if "peliculas_idx" not in st.session_state:
@@ -219,7 +265,7 @@ if st.session_state.peliculas_idx:
         - 1.0: Máxima influencia
         - 0.0: Sin influencia
         
-        ⚠️ Nota: Los pesos solo se utilizan cuando se usa el promedio ponderado. 
+        Nota: Los pesos solo se utilizan cuando se usa el promedio ponderado. 
         Si se selecciona "Usar mediana", los pesos se ignoran.
         """)
         pesos = []
@@ -322,7 +368,7 @@ if st.session_state.peliculas_idx:
                         st.markdown("No se encontraron géneros en común.")
 
                     # Keywords compartidas
-                    st.markdown("### 🔑 Keywords en Común")
+                    st.markdown("### Keywords en Común")
                     kw_info = explicacion.get('keywords', {})
                     if kw_info:
                         for pelicula, kws in kw_info.items():
@@ -347,32 +393,32 @@ if st.session_state.peliculas_idx:
 
                     # Directores y actores
                     if explicacion.get('directores'):
-                        st.markdown("### 🎬 Directores en Común")
+                        st.markdown("### Directores en Común")
                         for director in explicacion.get('directores', []):
                             st.markdown(f"- {director}")
 
                     if explicacion.get('actores'):
-                        st.markdown("### 🎭 Actores en Común")
+                        st.markdown("### Actores en Común")
                         for actor in explicacion.get('actores', []):
                             st.markdown(f"- {actor}")
 
                     # Top TF-IDF terms que explican la similitud
                     top_terms = explicacion.get('top_terms', [])
                     if top_terms:
-                        st.markdown("### ✨ Términos TF‑IDF que explican la similitud")
+                        st.markdown("### Términos TF‑IDF que explican la similitud")
                         st.markdown(", ".join(top_terms))
 
                     # Contribución relativa de cada película base
                     contribs = explicacion.get('contribuciones', {})
                     if contribs:
-                        st.markdown("### 📊 Contribución relativa de cada película base")
+                        st.markdown("### Contribución relativa de cada película base")
                         for base, val in contribs.items():
                             st.markdown(f"- {base}: {val*100:.1f}%")
 
                     # Mostrar similitudes individuales si están disponibles
                     similitudes_ind = explicacion.get('similitudes_individuales', {})
                     if similitudes_ind:
-                        st.markdown("### 🔍 Similitudes individuales (por base)")
+                        st.markdown("### Similitudes individuales (por base)")
                         for base, sim in similitudes_ind.items():
                             st.markdown(f"- {base}: {sim*100:.1f}%")
 
